@@ -17,39 +17,40 @@ type Record struct {
 // State 是幂等台账。
 type State struct {
 	TTL  int
-	Recs []Record
+	Recs map[string]*Record
 }
 
 // NewState 建一份台账。
 func NewState(ttl int) *State {
-	return &State{TTL: ttl}
+	return &State{TTL: ttl, Recs: make(map[string]*Record)}
 }
 
 func find(st *State, key string, c *Counter) *Record {
 	c.Scanned++
-	for i := range st.Recs {
-		c.Scanned++
-		if st.Recs[i].Key == key {
-			return &st.Recs[i]
-		}
-	}
-	return nil
+	return st.Recs[key]
+}
+
+func live(rec *Record, now int) bool {
+	return rec != nil && now < rec.Expires
 }
 
 // Begin 申请处理一个幂等键。
 func Begin(st *State, key string, now int, c *Counter) string {
 	rec := find(st, key, c)
-	if rec != nil && rec.Value != "" {
+	if !live(rec, now) {
+		st.Recs[key] = &Record{Key: key, State: "pending", Expires: now + st.TTL}
+		return "new"
+	}
+	if rec.State == "done" {
 		return "replay"
 	}
-	st.Recs = append(st.Recs, Record{Key: key, State: "pending", Expires: now + st.TTL})
-	return "new"
+	return "inflight"
 }
 
 // Complete 记录一次处理结果。
 func Complete(st *State, key, value string, now int, c *Counter) {
 	rec := find(st, key, c)
-	if rec == nil {
+	if !live(rec, now) || rec.State == "done" {
 		return
 	}
 	rec.State = "done"
